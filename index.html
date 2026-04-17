@@ -146,6 +146,7 @@
           </div>
         </div>
         <div class="tc-explanation" id="tc-explanation"></div>
+        <div class="static-analysis-badge hidden" id="static-analysis-result"></div>
       </div>
 
       <!-- Internal State (q) -->
@@ -236,6 +237,26 @@
           </div>
         </div>
         <div class="graph-canvas" id="graph-container"></div>
+        
+        <!-- Recommendation Toast (Lucky Run) -->
+        <div id="recommendation-toast" class="recommendation-toast hidden">
+          <div class="toast-icon">
+            <span class="material-symbols-outlined">lightbulb</span>
+          </div>
+          <div class="toast-content">
+            <div class="toast-title">
+              ⚠️ Complexity Mismatch Detected
+            </div>
+            <div class="toast-message" id="toast-message-text"></div>
+            <div class="toast-technical">
+              <a href="#" class="toast-why-link" id="toast-why-link">Technical Breakdown</a>
+              <span class="material-symbols-outlined toast-why-icon" id="toast-why-icon" title="">help</span>
+            </div>
+          </div>
+          <button class="toast-close" id="btn-close-toast" title="Dismiss">
+            <span class="material-symbols-outlined">close</span>
+          </button>
+        </div>
       </section>
 
       <!-- Tape Visualization -->
@@ -275,6 +296,9 @@
             <span class="material-symbols-outlined" style="font-size:14px">show_chart</span>
             <span>Efficiency: n vs Steps</span>
             <div class="analytics-chart-actions">
+              <button class="analytics-icon-btn" id="btn-stress-test" title="Run Stress Test (Worst-Case Simulator)">
+                <span class="material-symbols-outlined" style="font-size:15px">query_stats</span>
+              </button>
               <button class="analytics-icon-btn" id="btn-download-json" title="Download Machine JSON">
                 <span class="material-symbols-outlined" style="font-size:15px">download</span>
               </button>
@@ -328,6 +352,8 @@
       </div>
 
     </aside>
+
+  </div>
 
   </div>
 

@@ -23,10 +23,15 @@ class TuringMachine {
     // Initialize tapes
     this.tapes = [];
     this.heads = [];
+    this.headDirections = [];
+    this.headReversals = [];
+    this.stateCounts = {};
     for (let i = 0; i < numTapes; i++) {
       const tapeStr = tapeInputs[i] || '';
       this.tapes.push(this._createTape(tapeStr));
       this.heads.push(1); // Start at position 1 (after leading blank)
+      this.headDirections.push('S');
+      this.headReversals.push(0);
     }
 
     this.currentState = this.config.initialState;
@@ -146,7 +151,10 @@ class TuringMachine {
           transition: { from: fromState, to: rejState, read: [...readSyms], write: [...readSyms], move: Array(this.config.numTapes).fill('S') },
           event: 'REJECTED',
           tapeSnapshots: this.tapes.map(t => [...t]),
-          headPositions: [...this.heads]
+          headPositions: [...this.heads],
+          headDirections: [...this.headDirections],
+          headReversals: [...this.headReversals],
+          stateCounts: {...this.stateCounts}
         };
         this.history.push(result);
         return result;
@@ -165,7 +173,10 @@ class TuringMachine {
         transition: null,
         event: 'HALT_NO_TRANSITION',
         tapeSnapshots: this.tapes.map(t => [...t]),
-        headPositions: [...this.heads]
+        headPositions: [...this.heads],
+        headDirections: [...this.headDirections],
+        headReversals: [...this.headReversals],
+        stateCounts: {...this.stateCounts}
       };
       this.history.push(result);
       return result;
@@ -176,6 +187,9 @@ class TuringMachine {
     const prevHeads = [...this.heads];
     const prevTapes = this.tapes.map(t => [...t]);
 
+    // Update state counts
+    this.stateCounts[this.currentState] = (this.stateCounts[this.currentState] || 0) + 1;
+
     // Apply transition
     for (let i = 0; i < this.config.numTapes; i++) {
       const ti = this._tapeFor(i);
@@ -184,6 +198,13 @@ class TuringMachine {
       if (moveDir === 'R') this.heads[i]++;
       else if (moveDir === 'L') this.heads[i]--;
       // 'S' = stay
+      
+      if (moveDir === 'R' || moveDir === 'L') {
+        if (this.headDirections[i] !== 'S' && this.headDirections[i] !== moveDir) {
+           this.headReversals[i]++;
+        }
+        this.headDirections[i] = moveDir;
+      }
       this._ensureTapeBounds(i);
     }
 
@@ -211,7 +232,10 @@ class TuringMachine {
       transition: transition,
       event: this.accepted ? 'ACCEPTED' : (this.rejected ? 'REJECTED' : 'STEP'),
       tapeSnapshots: this.tapes.map(t => [...t]),
-      headPositions: [...this.heads]
+      headPositions: [...this.heads],
+      headDirections: [...this.headDirections],
+      headReversals: [...this.headReversals],
+      stateCounts: {...this.stateCounts}
     };
 
     this.history.push(result);
@@ -222,6 +246,9 @@ class TuringMachine {
     this.currentState = stateObj.currentState;
     this.tapes = stateObj.tapes.map(t => [...t]);
     this.heads = [...stateObj.heads];
+    this.headDirections = [...(stateObj.headDirections || [])];
+    this.headReversals = [...(stateObj.headReversals || [])];
+    this.stateCounts = {...(stateObj.stateCounts || {})};
     this.stepCount = stateObj.stepCount;
     this.halted = stateObj.halted;
     this.accepted = stateObj.accepted;
@@ -234,6 +261,9 @@ class TuringMachine {
       currentState: this.currentState,
       tapes: this.tapes.map(t => [...t]),
       heads: [...this.heads],
+      headDirections: [...this.headDirections],
+      headReversals: [...this.headReversals],
+      stateCounts: {...this.stateCounts},
       stepCount: this.stepCount,
       halted: this.halted,
       accepted: this.accepted,

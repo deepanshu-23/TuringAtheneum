@@ -419,6 +419,7 @@ class App {
     this._resetMachine();
     this._buildRuleTable();
     this._updateStateInfo();
+    this._runStaticAnalysis(this.machine);
   }
 
   // ===== DYNAMIC TAPE INPUT FIELDS =====
@@ -1435,6 +1436,7 @@ class App {
     this._renderEditorStatesList();
     this.graph.buildGraph(this.machine);
     this._updateStats();
+    this._runStaticAnalysis(this.machine);
     return true;
   }
 
@@ -1785,7 +1787,19 @@ class App {
     // Clear analytics history
     const btnClear = document.getElementById('btn-clear-history');
     if (btnClear) {
-      btnClear.addEventListener('click', () => this._clearAnalyticsHistory());
+      btnClear.addEventListener('click', () => this._clearAnalyticsHistory(false));
+    }
+
+    // Run Stress Test
+    const btnStressTest = document.getElementById('btn-stress-test');
+    if (btnStressTest) {
+      btnStressTest.addEventListener('click', () => this._runStressTest());
+    }
+
+    // Close toast
+    const btnCloseToast = document.getElementById('btn-close-toast');
+    if (btnCloseToast) {
+      btnCloseToast.addEventListener('click', () => this._hideLuckyRecommendation());
     }
 
     // Tab switching for left panel modes (Presets vs Playground)
@@ -1877,12 +1891,148 @@ class App {
     return colors[tapeCount] || '#f59e0b';
   }
 
-  _recordAnalyticsRun() {
+  // ===== STATIC ANALYSIS & WORST-CASE RUNS =====
+
+  _clearAnalyticsHistory(skipRender = false) {
+    this.analyticsHistory = [];
+    this.complexityDataPoints = [];
+    this._cachedFits = {};
+    this._cachedFit = null;
+    this._hideLuckyRecommendation();
+    if (!skipRender) {
+      this._renderAnalyticsHistory();
+      this._renderAnalyticsChart();
+    }
+  }
+
+  _runStaticAnalysis(machine) {
+    const badge = document.getElementById('static-analysis-result');
+    if (!badge || !machine || !machine.config.transitions) return;
+
+    badge.classList.remove('static-analysis-warning');
+    badge.classList.add('hidden');
+    badge.textContent = '';
+
+    const isLinear = machine.config.timeComplexity && typeof machine.config.timeComplexity === 'string' && machine.config.timeComplexity.includes('O(n)') && !machine.config.timeComplexity.includes('n²');
+
+    if (machine.config.fullScanRequired || machine.config.allowsEarlyTermination || isLinear) {
+      return;
+    }
+
+    if (this.isSandboxMode) {
+      const tc = this._calcSandboxStaticComplexity(machine);
+      if (tc !== 'O(n)') {
+        badge.textContent = `Static Analysis: Derived Graph Complexity (Potential ${tc})`;
+        badge.classList.remove('hidden');
+      }
+    } else {
+      let hasSweep = false;
+      const t = machine.config.transitions;
+      
+      for (const t1 of t) {
+        if (t1.move.includes('R') && t1.from === t1.to) {
+          for (const t2 of t) {
+            if (t2.from === t1.from && t2.to !== t1.from && t2.move.includes('L')) {
+              for (const t3 of t) {
+                if (t3.from === t2.to && t3.to === t2.to && t3.move.includes('L')) {
+                  hasSweep = true;
+                }
+              }
+            }
+          }
+        }
+      }
+
+      if (hasSweep) {
+        badge.textContent = 'Static Analysis: Nested Loops detected (Potential O(n²))';
+        badge.classList.remove('hidden');
+      }
+    }
+  }
+
+  _calcSandboxStaticComplexity(machine) {
+    const transitions = machine.config.transitions;
+    let maxLoops = 0;
+    const visited = new Set();
+    
+    const dfs = (curr, loops) => {
+      maxLoops = Math.max(maxLoops, loops);
+      const outgoing = transitions.filter(t => t.from === curr);
+      for (const edge of outgoing) {
+        if (edge.to === curr) continue; 
+        if (visited.has(edge.to)) {
+          maxLoops = Math.max(maxLoops, loops + 1);
+          continue;
+        }
+        visited.add(edge.to);
+        dfs(edge.to, loops);
+        visited.delete(edge.to);
+      }
+    };
+
+    visited.add(machine.config.initialState);
+    dfs(machine.config.initialState, 0);
+
+    if (maxLoops > 0) return 'O(n²)';
+    return 'O(n)';
+  }
+
+  _runStressTest() {
+    if (this.isPlaying) this.stop();
+    this._hideLuckyRecommendation();
+    
+    this.analyticsHistory = this.analyticsHistory.filter(r => !r.isLucky);
+    const sizes = [4, 8, 12, 16, 20];
+    
+    for (const size of sizes) {
+      let inputs = [];
+      const numTapes = this.machine.config.numTapes || 1;
+
+      if (this.currentAlgoKey === 'substring-search' || this.currentAlgoKey === 'substring-multi') {
+        const body = '1'.repeat(size);
+        const pattern = '1'.repeat(Math.max(1, Math.floor(size / 2))) + '0'; 
+        if (numTapes > 1) {
+          inputs = [body, pattern];
+        } else {
+          inputs = [body + '§' + pattern];
+        }
+      } else if (this.currentAlgoKey === 'palindrome' || this.currentAlgoKey === 'palindrome-multi') {
+        const half = '1'.repeat(Math.floor(size / 2) - 1) + '0';
+        inputs = [half + half.split('').reverse().join('')];
+      } else if (this.currentAlgoKey === 'binary-add' || this.currentAlgoKey === 'binary-add-multi') {
+        inputs = ['1'.repeat(size), '0'.repeat(size - 1) + '1'];
+      } else {
+        inputs = ['1'.repeat(size)];
+      }
+
+      this._runFastForwardWithInputs(inputs, true);
+    }
+    
+    this._computeAllRegressionFits();
+    this._renderAnalyticsHistory();
+    this._renderAnalyticsChart();
+  }
+
+  _runFastForwardWithInputs(inputs, isStressTest) {
+    for (let t = 0; t < inputs.length; t++) {
+        const el = document.getElementById(this.isSandboxMode ? `workbench-tape-${t}` : `tape-input-${t}`);
+        if(el) el.value = inputs[t];
+    }
+    this._resetMachine();
+    
+    let count = 0;
+    const maxSteps = 10000;
+    while (!this.machine.getState().halted && count < maxSteps) {
+      this.machine.step();
+      count++;
+    }
+    
+    this._recordAnalyticsRun(isStressTest);
+  }
+
+  _recordAnalyticsRun(isStressTest = false) {
     if (!this.machine) return;
     const state = this.machine.getState();
-    
-    // Filter Rejected Inputs
-    if (state.rejected || state.currentState === 'q_rej') return;
 
     let n = 0;
     const numTapes = this.machine.config.numTapes || 1;
@@ -1890,11 +2040,65 @@ class App {
       const el = document.getElementById(this.isSandboxMode ? `workbench-tape-${t}` : `tape-input-${t}`);
       if (el) n += el.value.length;
     }
+    if (n === 0) n = 1;
 
     const steps = state.stepCount;
     let result = 'halt';
     if (state.accepted) result = 'accept';
     else if (state.rejected) result = 'reject'; // fallback just in case
+
+    let isLuckyType = null;
+    const isMultiHead = this.machine.config.isMultiHead || false;
+    let hasSweep = false;
+    
+    const tConfig = this.machine.config.transitions;
+    if (tConfig) {
+      for (const t1 of tConfig) {
+        if (t1.move.includes('R') && t1.from === t1.to) {
+          for (const t2 of tConfig) {
+            if (t2.from === t1.from && t2.to !== t1.from && t2.move.includes('L')) {
+              for (const t3 of tConfig) {
+                if (t3.from === t2.to && t3.to === t2.to && t3.move.includes('L')) {
+                  hasSweep = true;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    let totalReversals = 0;
+
+    if (!isStressTest) {
+      if (this.machine.config.allowsEarlyTermination && steps < n * 1.5) {
+         isLuckyType = 'early_termination';
+      } else if (!this.machine.config.fullScanRequired && !isMultiHead && hasSweep) {
+        totalReversals = state.headReversals ? state.headReversals.reduce((a, b) => a + b, 0) : 0;
+        
+        if (totalReversals <= 1) {
+          isLuckyType = 'reversals';
+        } else {
+          let maxStateCount = 0;
+          if (state.stateCounts) {
+            for (const [s, count] of Object.entries(state.stateCounts)) {
+              if (count > maxStateCount) {
+                maxStateCount = count;
+              }
+            }
+          }
+          
+          if (maxStateCount > 0 && (maxStateCount / steps) >= 0.9 && steps < (n * n * 0.5)) {
+            isLuckyType = 'density';
+          }
+        }
+      }
+    }
+
+    // Filter out manual runs that rejected too early, but ALWAYS keep Stress Test runs and Lucky runs
+    if (!isStressTest && result === 'reject' && !isLuckyType) {
+       return; 
+    }
 
     this.analyticsHistory.push({
       n,
@@ -1902,14 +2106,63 @@ class App {
       result,
       algo: this.currentAlgoKey,
       tapes: this.machine.config.numTapes,
-      timestamp: Date.now()
+      timestamp: Date.now(),
+      isStressTest: isStressTest,
+      isLucky: (isLuckyType !== null)
     });
+
+    if (isLuckyType) {
+      this._showLuckyRecommendation(isLuckyType, totalReversals, n);
+    }
 
     // Recompute fits per tape group on completed runs (visual stability)
     this._computeAllRegressionFits();
 
-    this._renderAnalyticsHistory();
-    this._renderAnalyticsChart();
+    // Only render if we aren't batch processing stress tests (which handle bulk updates)
+    if (!isStressTest) {
+      this._renderAnalyticsHistory();
+      this._renderAnalyticsChart();
+    }
+  }
+
+  _showLuckyRecommendation(type, reversals, n) {
+    const toast = document.getElementById('recommendation-toast');
+    const stressBtn = document.getElementById('btn-stress-test');
+    const badge = document.getElementById('static-analysis-result');
+    const msgText = document.getElementById('toast-message-text');
+    const whyIcon = document.getElementById('toast-why-icon');
+    
+    if (toast) {
+      if (type === 'early_termination') {
+         if (msgText) msgText.innerHTML = "⚠️ Early Termination: This algorithm found the result early (Best-Case scenario). To plot the true curve, click <strong>Run Stress Test</strong> for a worst-case string.";
+         if (whyIcon) whyIcon.title = "Heuristic Data: Machine halted significantly earlier than input length bounds.";
+      } else {
+         if (msgText) msgText.innerHTML = "Static analysis shows this algorithm could be O(n&sup2;), but your current input was processed in Linear time (O(n)). This is a 'Lucky Case' that hides the true complexity. Click <strong>Run Stress Test</strong> to see the worst-case curve.";
+         if (whyIcon) {
+           if (type === 'reversals') {
+             whyIcon.title = `Heuristic Data: Head Reversals: ${reversals} | Expected for O(n²): ~${Math.floor(n/2)}.`;
+           } else {
+             whyIcon.title = "Heuristic Data: High Density Sweeping Loop (\u2265 90%) && Low Step Count.";
+           }
+         }
+      }
+      toast.classList.remove('hidden');
+    }
+    
+    if (stressBtn) stressBtn.classList.add('lucky-pulse');
+    if (type !== 'early_termination' && badge && !badge.classList.contains('hidden')) {
+      badge.classList.add('static-analysis-warning');
+    }
+  }
+
+  _hideLuckyRecommendation() {
+    const toast = document.getElementById('recommendation-toast');
+    const stressBtn = document.getElementById('btn-stress-test');
+    const badge = document.getElementById('static-analysis-result');
+    
+    if (toast) toast.classList.add('hidden');
+    if (stressBtn) stressBtn.classList.remove('lucky-pulse');
+    if (badge) badge.classList.remove('static-analysis-warning');
   }
 
   // Build head start position inputs for playground mode
@@ -2155,22 +2408,40 @@ class App {
         svg.appendChild(actualLine);
       }
 
-      // Data point dots
+      // Data point dots & Stress Test markers
       groupRuns.forEach((run, index) => {
         const isLatest = index === groupRuns.length - 1;
-        const dot = this._svgNS('circle');
-        dot.setAttribute('cx', scaleX(run.n).toFixed(1));
-        dot.setAttribute('cy', scaleY(run.steps).toFixed(1));
-        dot.setAttribute('r', isLatest ? '4.5' : '3');
-        dot.setAttribute('fill', color);
-        dot.setAttribute('stroke', '#fff');
-        dot.setAttribute('stroke-width', '1.5');
-        dot.setAttribute('opacity', isLatest ? '1' : '0.55');
-        svg.appendChild(dot);
+        
+        if (run.isStressTest) {
+          const tri = this._svgNS('polygon');
+          const hr = isLatest ? 6 : 4.5;
+          const cx = scaleX(run.n);
+          const cy = scaleY(run.steps);
+          tri.setAttribute('points', `${cx},${cy - hr} ${cx - hr},${cy + hr} ${cx + hr},${cy + hr}`);
+          tri.setAttribute('fill', color);
+          tri.setAttribute('stroke', '#fff');
+          tri.setAttribute('stroke-width', '1.5');
+          tri.setAttribute('opacity', isLatest ? '1' : '0.8');
+          svg.appendChild(tri);
+          
+          const title = this._svgNS('title');
+          title.textContent = `WORST-CASE (Stress Test): n=${run.n}, steps=${run.steps} (${run.result.toUpperCase()})`;
+          tri.appendChild(title);
+        } else {
+          const dot = this._svgNS('circle');
+          dot.setAttribute('cx', scaleX(run.n).toFixed(1));
+          dot.setAttribute('cy', scaleY(run.steps).toFixed(1));
+          dot.setAttribute('r', isLatest ? '4.5' : '3');
+          dot.setAttribute('fill', color);
+          dot.setAttribute('stroke', '#fff');
+          dot.setAttribute('stroke-width', '1.5');
+          dot.setAttribute('opacity', isLatest ? '1' : '0.55');
+          svg.appendChild(dot);
 
-        const title = this._svgNS('title');
-        title.textContent = `${k}-Tape: n=${run.n}, steps=${run.steps} (${run.result.toUpperCase()})`;
-        dot.appendChild(title);
+          const title = this._svgNS('title');
+          title.textContent = `${k}-Tape: n=${run.n}, steps=${run.steps} (${run.result.toUpperCase()})`;
+          dot.appendChild(title);
+        }
       });
 
       // Legend entry — show point count if <3 distinct
@@ -2282,11 +2553,14 @@ class App {
   _computeRegressionFitSingle(runs, tapeCount = 1) {
     if (!runs || runs.length < 2) return null;
 
-    const distinctN = new Set(runs.map(r => r.n));
+    const stressRuns = runs.filter(r => r.isStressTest);
+    const targetRuns = stressRuns.length > 0 ? stressRuns : runs;
+    
+    const distinctN = new Set(targetRuns.map(r => r.n));
     if (distinctN.size < 2) return null;
 
-    const xs = runs.map(r => r.n);
-    const ys = runs.map(r => r.steps);
+    const xs = targetRuns.map(r => r.n);
+    const ys = targetRuns.map(r => r.steps);
 
     const linFit = this._leastSquaresLinear(xs, ys);
     const linR2 = this._rSquared(xs, ys, x => linFit.k * x + linFit.b);
@@ -2489,13 +2763,7 @@ class App {
     URL.revokeObjectURL(url);
   }
 
-  _clearAnalyticsHistory() {
-    this.analyticsHistory = [];
-    this._cachedFit = null;
-    this._cachedFits = {};
-    this._renderAnalyticsHistory();
-    this._renderAnalyticsChart();
-  }
+
 }
 
 // ===== INIT =====
